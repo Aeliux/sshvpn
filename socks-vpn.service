@@ -1,14 +1,14 @@
 [Unit]
-Description=SOCKS VPN via tun2socks
-After=network-online.target ssh-socks.service
-Wants=ssh-socks.service
+Description=SOCKS VPN via tun2socks (managed)
+After=network-online.target ssh-socks-managed.service
+Wants=ssh-socks-managed.service
 
 [Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/usr/local/bin/socks-vpn-control start
+Type=simple
+ExecStart=/usr/local/bin/socks-vpn-control daemon
 ExecStop=/usr/local/bin/socks-vpn-control stop
-ExecReload=/usr/local/bin/socks-vpn-control stop; /usr/local/bin/socks-vpn-control start
+Restart=on-failure
+RestartSec=3
 
 [Install]
 WantedBy=default.target
