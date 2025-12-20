@@ -79,6 +79,33 @@ setup_tun() {
   ip link set dev "$TUND_EV" up
 }
 
+wait_for_socks_ready() {
+  local attempts=${1:-12} # ~60s with 5s sleep below
+  local ok=0
+  while (( attempts > 0 )); do
+    # quick TCP check to the local SOCKS port
+    if timeout 2 bash -c "</dev/tcp/$SOCKS_HOST/$SOCKS_PORT" 2>/dev/null; then
+      ok=1
+    else
+      ok=0
+    fi
+
+    if (( ok == 1 )) && command -v curl >/dev/null 2>&1; then
+      # end-to-end check through SOCKS to a fixed IP (no DNS needed)
+      if timeout 6 curl -sS --socks5-hostname "$SOCKS_HOST:$SOCKS_PORT" \
+        --resolve one.one.one.one:443:1.1.1.1 https://one.one.one.one/cdn-cgi/trace -o /dev/null; then
+        return 0
+      fi
+      ok=0
+    fi
+
+    attempts=$((attempts - 1))
+    log "SOCKS not ready yet; retrying in 5s (remaining=$attempts)"
+    sleep 5
+  done
+  return 1
+}
+
 start_tun2socks() {
   pkill -f "badvpn-tun2socks.*$TUND_EV" || true
   nohup /usr/bin/badvpn-tun2socks --tundev "$TUND_EV" \
@@ -124,6 +151,9 @@ restore_dns() {
 start_vpn() {
   ensure_server_ip || die "Cannot resolve $HOSTNAME"
   ensure_gateway || die "Cannot find default gateway/interface"
+  if ! wait_for_socks_ready; then
+    die "SOCKS proxy $SOCKS_HOST:$SOCKS_PORT not ready"
+  fi
   log "Using gateway $GATEWAY dev $IFACE; server $SERVER_IP; socks $SOCKS_HOST:$SOCKS_PORT"
 
   setup_tun
@@ -162,10 +192,30 @@ stop_vpn() {
 
 monitor_loop() {
   trap 'exit 0' INT TERM
+  local dns_fail=0
+  local gw_fail=0
   while true; do
-    ensure_server_ip || { log "Cannot resolve $HOSTNAME; retrying"; sleep 3; continue; }
+    if ! ensure_server_ip; then
+      dns_fail=$((dns_fail + 1))
+      log "Cannot resolve $HOSTNAME; retrying (dns_fail=$dns_fail)"
+    else
+      dns_fail=0
+    fi
+
     if ! ensure_routes; then
-      sleep 3
+      gw_fail=$((gw_fail + 1))
+      log "No uplink route yet; retrying (gw_fail=$gw_fail)"
+    else
+      gw_fail=0
+    fi
+
+    if (( dns_fail >= 5 || gw_fail >= 5 )); then
+      log "Recycling VPN after repeated failures (dns_fail=$dns_fail gw_fail=$gw_fail)"
+      stop_vpn
+      sleep 5
+      start_vpn
+      dns_fail=0
+      gw_fail=0
       continue
     fi
     if ! pgrep -f "badvpn-tun2socks.*$TUND_EV" >/dev/null; then
