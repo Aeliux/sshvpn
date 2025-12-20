@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# === CONFIGURE THESE if different ===
+SOCKS_HOST=127.0.0.1
+SOCKS_PORT=1080
+TUND_EV=tun0
+TUN_IP=198.18.0.1
+TUN_NETMASK=255.255.255.0
+HOSTNAME=dev.bugfreenet.online   # the SSH host name you use to create SOCKS
+# === end config ===
+
+# helper to fail nicely
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+# require root for network operations
+if [[ $EUID -ne 0 ]]; then
+  echo "This script must be run as root (systemd will run it with proper privilege via polkit/ sudo if set)."
+  exit 1
+fi
+
+# find server IP
+SERVER_IP=$(getent hosts "$HOSTNAME" | awk '{print $1}' || true)
+[ -n "$SERVER_IP" ] || die "Cannot resolve $HOSTNAME"
+
+# find current default gateway and interface
+read -r GATEWAY IFACE < <(ip route show default 0.0.0.0/0 | awk '/default/ {print $3, $5; exit}')
+[ -n "$GATEWAY" -a -n "$IFACE" ] || die "Cannot find default gateway/interface"
+
+echo "Using gateway $GATEWAY dev $IFACE; server $SERVER_IP; socks $SOCKS_HOST:$SOCKS_PORT"
+
+case "$1" in
+  start)
+    # create tun
+    ip tuntap add dev "$TUND_EV" mode tun || true
+    ip addr add "$TUN_IP"/24 dev "$TUND_EV" || true
+    ip link set dev "$TUND_EV" up
+
+    # ensure SSH server traffic goes via real gateway (prevent loop)
+    ip route replace "$SERVER_IP"/32 via "$GATEWAY" dev "$IFACE"
+
+    # start tun2socks
+    # ensure no leftover process
+    pkill -f "badvpn-tun2socks.*$TUND_EV" || true
+    nohup /usr/bin/badvpn-tun2socks --tundev "$TUND_EV" \
+      --netif-ipaddr "$TUN_IP" --netif-netmask "$TUN_NETMASK" \
+      --socks-server-addr "$SOCKS_HOST:$SOCKS_PORT" > /var/tmp/badvpn-tun2socks.log 2>&1 &
+
+    sleep 0.8
+
+    # adjust routing: give tun0 higher priority by adding default route via tun0
+    # keep fallback via the real gateway with a larger metric
+    ip route replace default dev "$TUND_EV" metric 50
+    ip route replace default via "$GATEWAY" dev "$IFACE" metric 100
+
+    # configure DNS: try systemd-resolved first
+    if command -v resolvectl >/dev/null 2>&1; then
+      echo "Setting DNS for tun interface to 1.1.1.1 (systemd-resolved)"
+      resolvectl dns "$TUND_EV" 1.1.1.1
+      resolvectl domain "$TUND_EV" "~."
+    else
+      # fallback: back up /etc/resolv.conf and point at Cloudflare
+      cp -n /etc/resolv.conf /etc/resolv.conf.socks-vpn.bak || true
+      echo "nameserver 1.1.1.1" > /etc/resolv.conf
+    fi
+
+    echo "socks-vpn started (tun: $TUND_EV). Check /var/tmp/badvpn-tun2socks.log for logs."
+    ;;
+
+  stop)
+    # restore DNS
+    if command -v resolvectl >/dev/null 2>&1; then
+      resolvectl revert "$TUND_EV" || true
+    else
+      if [[ -f /etc/resolv.conf.socks-vpn.bak ]]; then
+        mv /etc/resolv.conf.socks-vpn.bak /etc/resolv.conf
+      fi
+    fi
+
+    # remove the default route via tun0 if present, restore original gateway
+    ip route replace default via "$GATEWAY" dev "$IFACE" metric 100 || true
+    ip route del default dev "$TUND_EV" || true
+
+    # stop tun2socks and delete tun device
+    pkill -f "badvpn-tun2socks.*$TUND_EV" || true
+    sleep 0.5
+    ip link set dev "$TUND_EV" down || true
+    ip tuntap del dev "$TUND_EV" mode tun || true
+
+    # delete the special route for SSH server
+    ip route del "$SERVER_IP"/32 via "$GATEWAY" dev "$IFACE" || true
+
+    echo "socks-vpn stopped and cleaned."
+    ;;
+
+  status)
+    ip addr show dev "$TUND_EV" || true
+    ps aux | grep -E "badvpn-tun2socks" | grep -v grep || true
+    ip route show default || true
+    ;;
+
+  *)
+    echo "Usage: $0 {start|stop|status}"
+    exit 2
+    ;;
+esac

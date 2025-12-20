@@ -1,0 +1,12 @@
+[Unit]
+Description=SSH dynamic socks
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/sshpass -f /home/aeliux/.ssh/vpn.pass /usr/bin/ssh -o ExitOnForwardFailure=yes -o ServerAliveInterval=60 -N -D 127.0.0.1:1080 vpn-dev
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
