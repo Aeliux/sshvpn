@@ -1,5 +1,5 @@
 [Unit]
-Description=SOCKS VPN via tun2socks
+Description=Socks5-based VPN Service
 After=network-online.target socks-vpn-server.service
 Wants=socks-vpn-server.service
 

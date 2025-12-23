@@ -1,5 +1,5 @@
 [Unit]
-Description=Socks5 VPN Server via SSH
+Description=SSH SOCKS Proxy Server for socks-vpn
 After=network-online.target
 PartOf=socks-vpn.service
 
