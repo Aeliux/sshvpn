@@ -1,0 +1,13 @@
+[Unit]
+Description=Socks5 VPN Server via SSH
+After=network-online.target
+PartOf=socks-vpn.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/sshpass -f /usr/local/etc/ssh-socks.pass /usr/bin/ssh -F /usr/local/etc/ssh-socks.conf -N -D 127.0.0.1:1080 vpn
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

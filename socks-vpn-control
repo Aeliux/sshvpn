@@ -106,6 +106,22 @@ wait_for_socks_ready() {
   return 1
 }
 
+# Verify real connectivity without relying on DNS caches; prefer HTTPS to a fixed IP
+check_connectivity() {
+  local target_ip=${1:-1.1.1.1}
+  # Primary: HTTPS GET to the IP; -k to avoid cert name mismatch and disable output
+  if command -v curl >/dev/null 2>&1; then
+    if timeout 8 curl -fsS --max-time 8 --connect-timeout 4 -k "https://${target_ip}/" -o /dev/null; then
+      return 0
+    fi
+  fi
+  # Fallback: raw TCP connect to 443 so we do not depend on DNS at all
+  if timeout 4 bash -c "</dev/tcp/${target_ip}/443" 2>/dev/null; then
+    return 0
+  fi
+  return 1
+}
+
 start_tun2socks() {
   pkill -f "badvpn-tun2socks.*$TUND_EV" || true
   nohup /usr/bin/badvpn-tun2socks --tundev "$TUND_EV" \
@@ -194,6 +210,7 @@ monitor_loop() {
   trap 'exit 0' INT TERM
   local dns_fail=0
   local gw_fail=0
+  local conn_fail=0
   while true; do
     if ! ensure_server_ip; then
       dns_fail=$((dns_fail + 1))
@@ -209,14 +226,17 @@ monitor_loop() {
       gw_fail=0
     fi
 
-    if (( dns_fail >= 5 || gw_fail >= 5 )); then
-      log "Recycling VPN after repeated failures (dns_fail=$dns_fail gw_fail=$gw_fail)"
+    if ! check_connectivity; then
+      conn_fail=$((conn_fail + 1))
+      log "Connectivity check failed; retrying (conn_fail=$conn_fail)"
+    else
+      conn_fail=0
+    fi
+
+    if (( dns_fail >= 5 || gw_fail >= 5 || conn_fail >= 5 )); then
+      log "Restarting VPN after repeated failures (dns_fail=$dns_fail gw_fail=$gw_fail conn_fail=$conn_fail)"
       stop_vpn
-      sleep 5
-      start_vpn
-      dns_fail=0
-      gw_fail=0
-      continue
+      exit 1
     fi
     if ! pgrep -f "badvpn-tun2socks.*$TUND_EV" >/dev/null; then
       log "Restarting badvpn-tun2socks"

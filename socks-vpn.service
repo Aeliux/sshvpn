@@ -1,7 +1,7 @@
 [Unit]
-Description=SOCKS VPN via tun2socks (managed)
-After=network-online.target ssh-socks-managed.service
-Wants=ssh-socks-managed.service
+Description=SOCKS VPN via tun2socks
+After=network-online.target socks-vpn-server.service
+Wants=socks-vpn-server.service
 
 [Service]
 Type=simple
