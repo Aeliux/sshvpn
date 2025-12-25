@@ -18,15 +18,12 @@ SERVICE = "socks-vpn"
 class PublicIdentity:
     ip: str
     city: Optional[str]
-    region: Optional[str]
     country: Optional[str]
 
     def __str__(self):
         parts = [self.ip]
         if self.city:
             parts.append(self.city)
-        if self.region:
-            parts.append(self.region)
         if self.country:
             parts.append(self.country)
         return ", ".join(parts)
@@ -36,14 +33,13 @@ class PublicIdentity:
             return False
         return (self.ip == other.ip and
                 self.city == other.city and
-                self.region == other.region and
                 self.country == other.country)
     
     def __ne__(self, other):
         return not self.__eq__(other)
     
     def __hash__(self):
-        return hash((self.ip, self.city, self.region, self.country))
+        return hash((self.ip, self.city, self.country))
 
     def __bool__(self):
         return bool(self.ip)
@@ -71,9 +67,8 @@ def get_public_identity() -> Optional[PublicIdentity]:
         ip=data['ip']
         city = data['city']
         country=data['country']
-        region=data['region']
 
-        return PublicIdentity(ip=ip, city=city, region=region, country=country)
+        return PublicIdentity(ip=ip, city=city, country=country)
     except Exception:
         return None
 
@@ -118,7 +113,7 @@ class TrayApp(QtWidgets.QSystemTrayIcon):
 
         self.status_timer = QtCore.QTimer(self)
         self.status_timer.timeout.connect(self.refresh_status)
-        self.status_timer.start(2500)  # poll every 2.5s
+        
         self.update_status(ConnectionStatus.BUSY)
         self.refresh_status()
 
@@ -174,11 +169,17 @@ class TrayApp(QtWidgets.QSystemTrayIcon):
         self._pub_id_updated = False
         self.setIcon(QtGui.QIcon.fromTheme(TRAY_ICONS[self.status]))
 
+        # Stop status timer
+        if self.status_timer.isActive():
+            self.status_timer.stop()
+
         if self.status == ConnectionStatus.BUSY:
-            self.ip_timer.start(2000)  # check every 2 seconds
+            self.ip_timer.start(1000)  # check every 2 seconds
+            self.status_timer.start(500)  # refresh status every 0.5 seconds
             QtCore.QTimer.singleShot(1, self.update_public_identity)
         else:
             self.ip_timer.stop()
+            self.status_timer.start(5000)  # refresh status every 5 seconds
 
     def start_service(self):
         rc, out, err = systemctl("start", SERVICE)
