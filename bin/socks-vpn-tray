@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""
-Small system tray toggle for socks-vpn service using PyQt5.
-"""
+
+# /usr/local/bin/socks-vpn-tray - A system tray application to manage the Socks VPN service.
+
 import sys
 import shutil
 import subprocess

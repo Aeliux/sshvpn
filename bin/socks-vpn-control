@@ -12,7 +12,6 @@ TUN_IP=198.18.0.1
 TUN_NETMASK=255.255.255.0
 HOSTNAME=dev.bugfreenet.online   # the SSH host name you use to create SOCKS
 DNS_BACKUP=/etc/resolv.conf.socks-vpn.bak
-# === end config ===
 
 STATE_DIR=/run/socks-vpn
 STATE_FILE="$STATE_DIR/state.env"

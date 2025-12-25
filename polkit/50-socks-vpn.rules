@@ -1,0 +1,17 @@
+// Allow only root or members of socks-vpn to manage the socks-vpn.service unit.
+polkit.addRule(function(action, subject) {
+    var unit = action.lookup("unit");
+    var verb = action.lookup("verb");
+    var allowed = subject.user === "root" || subject.isInGroup("socks-vpn");
+
+    if (unit !== "socks-vpn.service") {
+        return polkit.Result.NOT_HANDLED;
+    }
+
+    if (action.id === "org.freedesktop.systemd1.manage-units" &&
+        (verb === "start" || verb === "stop" || verb === "restart" || verb === "reload")) {
+        return allowed ? polkit.Result.YES : polkit.Result.NOT_HANDLED;
+    }
+
+    return polkit.Result.NOT_HANDLED;
+});
