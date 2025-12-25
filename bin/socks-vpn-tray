@@ -2,12 +2,51 @@
 
 # /usr/local/bin/socks-vpn-tray - A system tray application to manage the Socks VPN service.
 
+from enum import Enum
+import json
 import sys
 import shutil
+from typing import Dict, Optional
+from urllib.request import urlopen
 import subprocess
 from PyQt5 import QtWidgets, QtGui, QtCore
+from dataclasses import dataclass
 
 SERVICE = "socks-vpn"
+
+@dataclass
+class PublicIdentity:
+    ip: str
+    city: Optional[str]
+    region: Optional[str]
+    country: Optional[str]
+
+    def __str__(self):
+        parts = [self.ip]
+        if self.city:
+            parts.append(self.city)
+        if self.region:
+            parts.append(self.region)
+        if self.country:
+            parts.append(self.country)
+        return ", ".join(parts)
+
+    def __eq__(self, other):
+        if not isinstance(other, PublicIdentity):
+            return False
+        return (self.ip == other.ip and
+                self.city == other.city and
+                self.region == other.region and
+                self.country == other.country)
+    
+    def __ne__(self, other):
+        return not self.__eq__(other)
+    
+    def __hash__(self):
+        return hash((self.ip, self.city, self.region, self.country))
+
+    def __bool__(self):
+        return bool(self.ip)
 
 def run_cmd(cmd):
     try:
@@ -23,10 +62,44 @@ def is_active():
     rc, out, err = systemctl("is-active", SERVICE)
     return rc == 0 and out == "active"
 
+def get_public_identity() -> Optional[PublicIdentity]:
+    try:
+        url = 'http://ipinfo.io/json'
+        response = urlopen(url)
+        data = json.load(response)
+
+        ip=data['ip']
+        city = data['city']
+        country=data['country']
+        region=data['region']
+
+        return PublicIdentity(ip=ip, city=city, region=region, country=country)
+    except Exception:
+        return None
+
+class ConnectionStatus(Enum):
+    INACTIVE = 0
+    BUSY = 1
+    ACTIVE = 2
+
+TRAY_ICONS: Dict[ConnectionStatus, str] = {
+    ConnectionStatus.INACTIVE:  "media-playback-stop",
+    ConnectionStatus.BUSY:      "process-working",
+    ConnectionStatus.ACTIVE:    "media-playback-start",
+}
+
 class TrayApp(QtWidgets.QSystemTrayIcon):
     def __init__(self, icon, parent=None):
         super().__init__(icon, parent)
         self.setToolTip("Socks VPN Tray")
+
+        self.status = None
+        self.public_identity: Optional[PublicIdentity] = None
+        self._pub_id_updated = False
+        self._pub_id_fails = 0
+
+        self._refreshing = False
+
         self.menu = QtWidgets.QMenu()
         self.action_start = self.menu.addAction("Start")
         self.action_stop  = self.menu.addAction("Stop")
@@ -40,54 +113,98 @@ class TrayApp(QtWidgets.QSystemTrayIcon):
         self.action_quit.triggered.connect(QtWidgets.qApp.quit)
         self.activated.connect(self.on_click)
 
-        self.status_timer = QtCore.QTimer()
+        self.ip_timer = QtCore.QTimer(self)
+        self.ip_timer.timeout.connect(self.update_public_identity)
+
+        self.status_timer = QtCore.QTimer(self)
         self.status_timer.timeout.connect(self.refresh_status)
         self.status_timer.start(2500)  # poll every 2.5s
+        self.update_status(ConnectionStatus.BUSY)
         self.refresh_status()
 
     def on_click(self, reason):
         # left-click toggles start/stop
         if reason == QtWidgets.QSystemTrayIcon.Trigger:
+            if self.status == ConnectionStatus.BUSY:
+                return
+
             if is_active():
                 self.stop_service()
             else:
                 self.start_service()
 
+    def update_public_identity(self):
+        identity = get_public_identity()
+        if not identity:
+            self._pub_id_fails += 1
+
+        if identity and (identity != self.public_identity or self._pub_id_fails > 0):
+            self.public_identity = identity
+            self._pub_id_updated = True
+            self._pub_id_fails = 0
+
     def refresh_status(self):
+        if self._refreshing:
+            return
+        self._refreshing = True
+        
         active = is_active()
+        self.action_start.setEnabled(not active)
+        self.action_stop.setEnabled(active)
+
         if active:
-            self.setIcon(QtGui.QIcon.fromTheme("media-playback-start"))  # theme icon
+            if self.status == ConnectionStatus.BUSY and self._pub_id_updated:
+                self.showMessage("Connected", f"Public IP: {self.public_identity}")
+                self.update_status(ConnectionStatus.ACTIVE)
+            
             self.setToolTip(f"Socks VPN is running")
-            self.action_start.setEnabled(False)
-            self.action_stop.setEnabled(True)
         else:
-            self.setIcon(QtGui.QIcon.fromTheme("media-playback-stop"))
+            if self.status != ConnectionStatus.INACTIVE:
+                self.showMessage("Disconnected", "Socks VPN is inactive.")
+                self.update_status(ConnectionStatus.INACTIVE)
             self.setToolTip(f"Socks VPN is inactive")
-            self.action_start.setEnabled(True)
-            self.action_stop.setEnabled(False)
+
+        self._refreshing = False
+
+    def update_status(self, status: ConnectionStatus):
+        if self.status == status:
+            return
+        
+        self.status = status
+        self._pub_id_updated = False
+        self.setIcon(QtGui.QIcon.fromTheme(TRAY_ICONS[self.status]))
+
+        if self.status == ConnectionStatus.BUSY:
+            self.ip_timer.start(2000)  # check every 2 seconds
+            QtCore.QTimer.singleShot(1, self.update_public_identity)
+        else:
+            self.ip_timer.stop()
 
     def start_service(self):
         rc, out, err = systemctl("start", SERVICE)
         if rc == 0:
             self.showMessage("Service started", "It may take a few seconds to connect.")
+            self.update_status(ConnectionStatus.BUSY)
         else:
-            self.showMessage("Failed to start", f"{err or out}")
+            self.showMessage("Failed to start", f"{err or out}", QtWidgets.QSystemTrayIcon.MessageIcon.Critical)
         self.refresh_status()
 
     def stop_service(self):
         rc, out, err = systemctl("stop", SERVICE)
         if rc == 0:
             self.showMessage("Service stopped", "Socks VPN has been stopped.")
+            self.update_status(ConnectionStatus.INACTIVE)
         else:
-            self.showMessage("Failed to stop", f"{err or out}")
+            self.showMessage("Failed to stop", f"{err or out}", QtWidgets.QSystemTrayIcon.MessageIcon.Critical)
         self.refresh_status()
 
     def restart_service(self):
         rc, out, err = systemctl("restart", SERVICE)
         if rc == 0:
             self.showMessage("Service restarted", "It may take a few seconds to reconnect.")
+            self.update_status(ConnectionStatus.BUSY)
         else:
-            self.showMessage("Failed to restart", f"{err or out}")
+            self.showMessage("Failed to restart", f"{err or out}", QtWidgets.QSystemTrayIcon.MessageIcon.Critical)
         self.refresh_status()
 
 def main():
