@@ -184,7 +184,6 @@ class TrayApp(QtWidgets.QSystemTrayIcon):
     def start_service(self):
         rc, out, err = systemctl("start", SERVICE)
         if rc == 0:
-            self.showMessage("Service started", "It may take a few seconds to connect.")
             self.update_status(ConnectionStatus.BUSY)
         else:
             self.showMessage("Failed to start", f"{err or out}", QtWidgets.QSystemTrayIcon.MessageIcon.Critical)
@@ -193,7 +192,6 @@ class TrayApp(QtWidgets.QSystemTrayIcon):
     def stop_service(self):
         rc, out, err = systemctl("stop", SERVICE)
         if rc == 0:
-            self.showMessage("Service stopped", "Socks VPN has been stopped.")
             self.update_status(ConnectionStatus.INACTIVE)
         else:
             self.showMessage("Failed to stop", f"{err or out}", QtWidgets.QSystemTrayIcon.MessageIcon.Critical)
@@ -202,7 +200,6 @@ class TrayApp(QtWidgets.QSystemTrayIcon):
     def restart_service(self):
         rc, out, err = systemctl("restart", SERVICE)
         if rc == 0:
-            self.showMessage("Service restarted", "It may take a few seconds to reconnect.")
             self.update_status(ConnectionStatus.BUSY)
         else:
             self.showMessage("Failed to restart", f"{err or out}", QtWidgets.QSystemTrayIcon.MessageIcon.Critical)
