@@ -1,12 +1,12 @@
 [Unit]
-Description=Socks5-based VPN Service
+Description=Socks VPN Service
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 Environment=VPN_CONFIG=/usr/local/etc/socks-vpn.conf
-ExecStart=/usr/local/bin/socks-vpn-control daemon
+ExecStart=/usr/local/bin/socks-vpn-control
 Restart=on-failure
 RestartSec=3
 KillSignal=SIGTERM

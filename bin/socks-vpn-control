@@ -4,11 +4,7 @@
 
 set -euo pipefail
 
-APP_NAME="socks-vpn"
 CONFIG_FILE=${VPN_CONFIG:-/usr/local/etc/socks-vpn.conf}
-STATE_DIR=/run/socks-vpn
-STATE_FILE="$STATE_DIR/state.env"
-DNS_BACKUP=/etc/resolv.conf.socks-vpn.bak
 
 DEFAULT_LOCAL_BYPASS="127.0.0.0/8 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16"
 DEFAULT_DNS="1.1.1.1"
@@ -19,6 +15,7 @@ SSH_PID=""
 TUN2SOCKS_PID=""
 GATEWAY=""
 IFACE=""
+RESOLVED_SSH_IP=""
 RUNNING=0
 STOPPING=0
 
@@ -36,11 +33,12 @@ LOG_LEVEL=${LOG_LEVEL:-info}
 LOG_LEVEL_NUM=$(level_value "$LOG_LEVEL")
 
 log() {
+  local current
   local level=$1; shift
   local msg="$*"
-  local current=$(level_value "$level")
+  current=$(level_value "$level")
   if (( current <= LOG_LEVEL_NUM )); then
-    echo "[$APP_NAME][$level] $msg"
+    echo "$msg"
   fi
 }
 
@@ -76,31 +74,38 @@ load_config() {
   CHECK_INTERVAL=${CHECK_INTERVAL:-$DEFAULT_CHECK_INTERVAL}
   LOCAL_BYPASS_CIDRS=${LOCAL_BYPASS_CIDRS:-$DEFAULT_LOCAL_BYPASS}
 
-  SSH_HOST_IP=${SSH_HOST_IP:-}
+  SSH_HOST=${SSH_HOST:-}
   SSH_PORT=${SSH_PORT:-22}
   SSH_USER=${SSH_USER:-}
   SSH_AUTH_METHOD=${SSH_AUTH_METHOD:-password}
   SSH_PASSWORD_FILE=${SSH_PASSWORD_FILE:-/usr/local/etc/ssh-socks.pass}
   SSH_IDENTITY_FILE=${SSH_IDENTITY_FILE:-}
-  SSH_STRICT_HOST_KEY_CHECKING=${SSH_STRICT_HOST_KEY_CHECKING:-no}
   SSH_SERVER_ALIVE_INTERVAL=${SSH_SERVER_ALIVE_INTERVAL:-5}
   SSH_SERVER_ALIVE_COUNT_MAX=${SSH_SERVER_ALIVE_COUNT_MAX:-3}
   SSH_EXTRA_OPTS=${SSH_EXTRA_OPTS:-}
 }
 
 validate_config() {
-  [[ -n "$SSH_HOST_IP" ]] || die "SSH_HOST_IP is required and must be an IP address"
-  if [[ ! $SSH_HOST_IP =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-    die "SSH_HOST_IP must be an IPv4 address"
-  fi
+  [[ -n "$SSH_HOST" ]] || die "SSH_HOST is required"
   [[ -n "$SSH_USER" ]] || die "SSH_USER is required"
   if [[ $SSH_AUTH_METHOD == "password" ]]; then
     [[ -r "$SSH_PASSWORD_FILE" ]] || die "SSH_PASSWORD_FILE $SSH_PASSWORD_FILE is not readable"
+    command -v sshpass >/dev/null 2>&1 || die "sshpass is required for password authentication"
   elif [[ $SSH_AUTH_METHOD == "key" ]]; then
     [[ -r "$SSH_IDENTITY_FILE" ]] || die "SSH_IDENTITY_FILE $SSH_IDENTITY_FILE is not readable"
   else
     die "SSH_AUTH_METHOD must be password or key"
   fi
+  command -v resolvectl >/dev/null 2>&1 || die "resolvectl is required"
+}
+
+resolve_ssh_ip() {
+  RESOLVED_SSH_IP=$(getent hosts "$SSH_HOST" | awk '{print $1; exit}')
+  if [[ ! $RESOLVED_SSH_IP =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+    RESOLVED_SSH_IP=""
+    return 1
+  fi
+  return 0
 }
 
 current_wan_route() {
@@ -135,31 +140,6 @@ ensure_gateway() {
   return 1
 }
 
-setup_state_dir() {
-  mkdir -p "$STATE_DIR"
-}
-
-persist_state() {
-  setup_state_dir
-  cat > "$STATE_FILE" <<EOF
-GATEWAY=$GATEWAY
-IFACE=$IFACE
-SSH_HOST_IP=$SSH_HOST_IP
-TUN_DEV=$TUN_DEV
-TUN_IP=$TUN_IP
-TUN_NETMASK=$TUN_NETMASK
-LOCAL_BYPASS_CIDRS="$LOCAL_BYPASS_CIDRS"
-MAIN_PID=$$
-EOF
-}
-
-load_state() {
-  if [[ -f "$STATE_FILE" ]]; then
-    # shellcheck disable=SC1090
-    source "$STATE_FILE"
-  fi
-}
-
 setup_tun() {
   ip tuntap add dev "$TUN_DEV" mode tun 2>/dev/null || true
   ip addr add "$TUN_IP"/24 dev "$TUN_DEV" 2>/dev/null || true
@@ -171,7 +151,7 @@ block_default_route() {
 }
 
 add_server_route() {
-  ip -4 route replace "$SSH_HOST_IP"/32 via "$GATEWAY" dev "$IFACE" || die "Failed to pin route to SSH host"
+  ip -4 route replace "$RESOLVED_SSH_IP"/32 via "$GATEWAY" dev "$IFACE" || die "Failed to pin route to SSH host"
 }
 
 add_local_bypass_routes() {
@@ -185,38 +165,28 @@ activate_tun_routes() {
 }
 
 setup_dns() {
-  if command -v resolvectl >/dev/null 2>&1; then
-    log info "Setting DNS for $TUN_DEV to $DNS_SERVER"
-    resolvectl dns "$TUN_DEV" "$DNS_SERVER"
-    resolvectl domain "$TUN_DEV" "~."
-  else
-    cp -n /etc/resolv.conf "$DNS_BACKUP" 2>/dev/null || true
-    echo "nameserver $DNS_SERVER" > /etc/resolv.conf
-  fi
+  log info "Setting DNS for $TUN_DEV to $DNS_SERVER"
+  resolvectl dns "$TUN_DEV" "$DNS_SERVER"
+  resolvectl domain "$TUN_DEV" "~."
 }
 
 restore_dns() {
-  if command -v resolvectl >/dev/null 2>&1; then
-    resolvectl revert "$TUN_DEV" || true
-  else
-    if [[ -f "$DNS_BACKUP" ]]; then
-      mv "$DNS_BACKUP" /etc/resolv.conf
-    fi
-  fi
+  resolvectl revert "$TUN_DEV" || true
 }
 
 start_ssh_socks() {
   local base_opts=(
     -o ExitOnForwardFailure=yes
-    -o ServerAliveInterval=$SSH_SERVER_ALIVE_INTERVAL
-    -o ServerAliveCountMax=$SSH_SERVER_ALIVE_COUNT_MAX
-    -o StrictHostKeyChecking=$SSH_STRICT_HOST_KEY_CHECKING
+    -o ServerAliveInterval="$SSH_SERVER_ALIVE_INTERVAL"
+    -o ServerAliveCountMax="$SSH_SERVER_ALIVE_COUNT_MAX"
+    -o StrictHostKeyChecking=no
     -o UserKnownHostsFile=/dev/null
     -o LogLevel=ERROR
+    -o ConnectTimeout=10
     -p "$SSH_PORT"
     -N
     -D "$SOCKS_HOST:$SOCKS_PORT"
-    "$SSH_USER@$SSH_HOST_IP"
+    "$SSH_USER@$RESOLVED_SSH_IP"
   )
 
   if [[ -n "$SSH_EXTRA_OPTS" ]]; then
@@ -226,10 +196,10 @@ start_ssh_socks() {
   fi
 
   if [[ $SSH_AUTH_METHOD == "password" ]]; then
-    log info "Starting SSH SOCKS (password auth) to $SSH_HOST_IP:$SSH_PORT"
+    log info "Starting SSH SOCKS (password auth) to $RESOLVED_SSH_IP:$SSH_PORT"
     sshpass -f "$SSH_PASSWORD_FILE" ssh "${base_opts[@]}" > /var/tmp/ssh-socks.log 2>&1 &
   else
-    log info "Starting SSH SOCKS (key auth) to $SSH_HOST_IP:$SSH_PORT"
+    log info "Starting SSH SOCKS (key auth) to $RESOLVED_SSH_IP:$SSH_PORT"
     ssh -i "$SSH_IDENTITY_FILE" "${base_opts[@]}" > /var/tmp/ssh-socks.log 2>&1 &
   fi
 
@@ -249,7 +219,7 @@ wait_for_socks_ready() {
 
     if (( ok == 1 )) && command -v curl >/dev/null 2>&1; then
       if timeout 6 curl -sS --socks5-hostname "$SOCKS_HOST:$SOCKS_PORT" \
-        --resolve $CHECK_TARGET:443:$CHECK_TARGET -k "https://$CHECK_TARGET" -o /dev/null; then
+        --resolve "$CHECK_TARGET":443:"$CHECK_TARGET" -k "https://$CHECK_TARGET" -o /dev/null; then
         return 0
       fi
       ok=0
@@ -301,7 +271,9 @@ teardown_routes() {
   if [[ -n "$GATEWAY" && -n "$IFACE" ]]; then
     ip -4 route replace default via "$GATEWAY" dev "$IFACE" metric 100 2>/dev/null || true
   fi
-  ip -4 route del "$SSH_HOST_IP"/32 via "$GATEWAY" dev "$IFACE" 2>/dev/null || true
+  if [[ -n "$RESOLVED_SSH_IP" ]]; then
+    ip -4 route del "$RESOLVED_SSH_IP"/32 via "$GATEWAY" dev "$IFACE" 2>/dev/null || true
+  fi
   for cidr in $LOCAL_BYPASS_CIDRS; do
     ip -4 route del "$cidr" via "$GATEWAY" dev "$IFACE" 2>/dev/null || true
   done
@@ -317,13 +289,11 @@ stop_vpn() {
     return
   fi
   STOPPING=1
-  load_state
   restore_dns
   stop_processes
   teardown_routes
   teardown_tun
-  rm -f "$STATE_FILE" 2>/dev/null || true
-  log info "socks-vpn stopped and cleaned."
+  log info "Stopped and cleaned."
 }
 
 handle_signal() {
@@ -339,9 +309,7 @@ monitor_loop() {
     if [[ -n "$SSH_PID" ]] && ! kill -0 "$SSH_PID" 2>/dev/null; then
       log warn "SSH SOCKS process died; restarting"
       start_ssh_socks
-      if ! wait_for_socks_ready 6; then
-        log warn "SOCKS still not ready; will retry"
-      fi
+      wait_for_socks_ready 6 || log warn "SOCKS still not ready; will retry"
     fi
 
     if [[ -n "$TUN2SOCKS_PID" ]] && ! kill -0 "$TUN2SOCKS_PID" 2>/dev/null; then
@@ -352,9 +320,7 @@ monitor_loop() {
     if ! check_connectivity "$CHECK_TARGET"; then
       log warn "Connectivity check failed; cycling datapath"
       start_tun2socks
-      if [[ -n "$SSH_PID" ]] && kill -0 "$SSH_PID" 2>/dev/null; then
-        :
-      else
+      if [[ -z "$SSH_PID" ]] || ! kill -0 "$SSH_PID" 2>/dev/null; then
         start_ssh_socks
       fi
     fi
@@ -367,13 +333,14 @@ start_vpn() {
   require_root
   load_config
   validate_config
+  resolve_ssh_ip || die "Cannot resolve $SSH_HOST"
   ensure_gateway || die "Cannot find default gateway/interface"
 
   block_default_route
   add_server_route
   add_local_bypass_routes
 
-  log info "Using gateway $GATEWAY dev $IFACE; server $SSH_HOST_IP; socks $SOCKS_HOST:$SOCKS_PORT"
+  log info "Gateway $GATEWAY dev $IFACE; server $SSH_HOST resolved to $RESOLVED_SSH_IP; socks $SOCKS_HOST:$SOCKS_PORT"
 
   setup_tun
   start_ssh_socks
@@ -388,45 +355,12 @@ start_vpn() {
   start_tun2socks
   activate_tun_routes
   setup_dns
-  persist_state
-  log info "socks-vpn started (tun: $TUN_DEV)."
+  log info "Started (tun: $TUN_DEV)."
 }
 
-status_vpn() {
-  ip addr show dev "$TUN_DEV" || true
-  pgrep -af "badvpn-tun2socks" || true
-  ip route show default || true
-}
+trap 'handle_signal TERM' TERM
+trap 'handle_signal INT' INT
 
-stop_command() {
-  load_state
-  if [[ -n ${MAIN_PID:-} && "$MAIN_PID" != "$$" ]] && kill -0 "$MAIN_PID" 2>/dev/null; then
-    log info "Signaling running daemon (pid=$MAIN_PID)"
-    kill -TERM "$MAIN_PID"
-    exit 0
-  fi
-  stop_vpn
-}
-
-case "${1:-}" in
-  start)
-    start_vpn
-    ;;
-  daemon)
-    trap 'handle_signal TERM' TERM
-    trap 'handle_signal INT' INT
-    start_vpn
-    RUNNING=1
-    monitor_loop
-    ;;
-  stop)
-    stop_command
-    ;;
-  status)
-    status_vpn
-    ;;
-  *)
-    echo "Usage: $0 {start|stop|status|daemon}"
-    exit 2
-    ;;
-esac
+start_vpn
+RUNNING=1
+monitor_loop

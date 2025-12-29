@@ -6,7 +6,7 @@ set -euo pipefail
 # - Preserves existing config/password files
 # - Restarts running service
 
-log() { echo "[socks-vpn installer] $*"; }
+log() { echo "$*"; }
 die() { echo "ERROR: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"; }
 
@@ -30,7 +30,6 @@ CONFIG_DIR=/usr/local/etc
 BIN_DST=/usr/local/bin/socks-vpn-control
 TRAY_DST=/usr/local/bin/socks-vpn-tray
 CONF_DST="$CONFIG_DIR/socks-vpn.conf"
-PASS_DST="$CONFIG_DIR/ssh-socks.pass"
 POLKIT_DST="$POLKIT_DIR/50-socks-vpn.rules"
 DESKTOP_DST="$DESKTOP_DIR/socks-vpn-tray.desktop"
 
@@ -72,18 +71,17 @@ if [[ -f "$SYSTEMD_DIR/socks-vpn-server.service" ]]; then
   rm -f "$SYSTEMD_DIR/socks-vpn-server.service"
 fi
 
+if [[ -f "$CONFIG_DIR/ssh-socks.conf" ]]; then
+  echo "WARNING: Found legacy config file at $CONFIG_DIR/ssh-socks.conf"
+  echo "This file has been replaced by socks-vpn.conf."
+  echo "Please migrate any custom settings to $CONF_DST and remove the old file."
+fi
+
 if [[ -f "$CONF_DST" ]]; then
   log "Keeping existing config at $CONF_DST"
 else
   install -m 0644 "$CONFIG_SRC/socks-vpn.conf" "$CONF_DST"
   log "Installed new config to $CONF_DST"
-fi
-
-if [[ -f "$PASS_DST" ]]; then
-  log "Keeping existing password file at $PASS_DST"
-else
-  install -m 0400 "$CONFIG_SRC/ssh-socks.pass" "$PASS_DST"
-  log "Created password file at $PASS_DST"
 fi
 
 log "Reloading systemd units"
