@@ -29,15 +29,20 @@ CONFIG_DIR=/usr/local/etc
 
 BIN_DST=/usr/local/bin/socks-vpn-control
 TRAY_DST=/usr/local/bin/socks-vpn-tray
-CONF_DST="$CONFIG_DIR/ssh-socks.conf"
+CONF_DST="$CONFIG_DIR/socks-vpn.conf"
 PASS_DST="$CONFIG_DIR/ssh-socks.pass"
 POLKIT_DST="$POLKIT_DIR/50-socks-vpn.rules"
 DESKTOP_DST="$DESKTOP_DIR/socks-vpn-tray.desktop"
 
 is_active="$(systemctl is-active socks-vpn.service 2>/dev/null || true)"
+old_server_active="$(systemctl is-active socks-vpn-server.service 2>/dev/null || true)"
 if [[ "$is_active" == "active" ]]; then
   log "socks-vpn.service is currently active, stopping for installation..."
   systemctl stop socks-vpn.service
+fi
+if [[ "$old_server_active" == "active" ]]; then
+  log "Stopping legacy socks-vpn-server.service"
+  systemctl stop socks-vpn-server.service
 fi
 
 log "Checking required commands"
@@ -59,14 +64,18 @@ install -d "$CONFIG_DIR" "$SYSTEMD_DIR" "$POLKIT_DIR" "$DESKTOP_DIR"
 install -m 0700 "$BIN_SRC/socks-vpn-control" "$BIN_DST"
 install -m 0755 "$BIN_SRC/socks-vpn-tray" "$TRAY_DST"
 install -m 0644 "$UNIT_SRC/socks-vpn.service" "$SYSTEMD_DIR/socks-vpn.service"
-install -m 0644 "$UNIT_SRC/socks-vpn-server.service" "$SYSTEMD_DIR/socks-vpn-server.service"
 install -m 0644 "$POLKIT_SRC" "$POLKIT_DST"
 install -m 0644 "$DESKTOP_SRC" "$DESKTOP_DST"
+
+if [[ -f "$SYSTEMD_DIR/socks-vpn-server.service" ]]; then
+  log "Removing legacy socks-vpn-server.service (merged into socks-vpn.service)"
+  rm -f "$SYSTEMD_DIR/socks-vpn-server.service"
+fi
 
 if [[ -f "$CONF_DST" ]]; then
   log "Keeping existing config at $CONF_DST"
 else
-  install -m 0644 "$CONFIG_SRC/ssh-socks.conf" "$CONF_DST"
+  install -m 0644 "$CONFIG_SRC/socks-vpn.conf" "$CONF_DST"
   log "Installed new config to $CONF_DST"
 fi
 
@@ -86,10 +95,8 @@ if [[ "$is_active" == "active" ]]; then
 fi
 
 active_after="$(systemctl is-active socks-vpn.service 2>/dev/null || true)"
-server_after="$(systemctl is-active socks-vpn-server.service 2>/dev/null || true)"
 
 log "socks-vpn.service status: ${active_after:-unknown}"
-log "socks-vpn-server.service status: ${server_after:-unknown}"
 if command -v update-desktop-database >/dev/null 2>&1; then
   update-desktop-database "$DESKTOP_DIR" || true
   log "Updated desktop database"

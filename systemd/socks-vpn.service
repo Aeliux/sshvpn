@@ -1,14 +1,17 @@
 [Unit]
 Description=Socks5-based VPN Service
-After=network-online.target socks-vpn-server.service
-Wants=socks-vpn-server.service
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
+Environment=VPN_CONFIG=/usr/local/etc/socks-vpn.conf
 ExecStart=/usr/local/bin/socks-vpn-control daemon
-ExecStop=/usr/local/bin/socks-vpn-control stop
 Restart=on-failure
 RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=25
+RuntimeDirectory=socks-vpn
 
 [Install]
 WantedBy=multi-user.target
