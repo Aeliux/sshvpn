@@ -24,6 +24,7 @@ SYSTEMD_DIR=/usr/lib/systemd/system
 DESKTOP_DIR=/usr/share/applications
 POLKIT_DIR=/usr/share/polkit-1/rules.d
 CONFIG_DIR=/etc
+BIN_DIR=/usr/bin
 
 SYSTEMD_DST="$SYSTEMD_DIR/socks-vpn.service"
 DESKTOP_DST="$DESKTOP_DIR/socks-vpn-tray.desktop"
@@ -52,11 +53,16 @@ fi
 
 log "Installing"
 install -d "$CONFIG_DIR" "$SYSTEMD_DIR" "$POLKIT_DIR" "$DESKTOP_DIR" "$LIB_DIR"
+install -d "$BIN_DIR"
 
 for script in "$BIN_SRC"/*; do
   script_name=$(basename "$script")
   install -m 0755 "$script" "$LIB_DIR/$script_name"
 done
+
+# user-facing symlinks
+ln -sf "$LIB_DIR/socks-vpn-control" "$BIN_DIR/socks-vpn-control"
+ln -sf "$LIB_DIR/socks-vpn-tray" "$BIN_DIR/socks-vpn-tray"
 
 install -m 0644 "$UNIT_SRC" "$SYSTEMD_DST"
 install -m 0644 "$POLKIT_SRC" "$POLKIT_DST"
@@ -67,6 +73,14 @@ if [[ -f "$CONF_DST" ]]; then
 else
   install -m 0644 "$CONFIG_SRC" "$CONF_DST"
   log "Installed new config to $CONF_DST"
+fi
+
+PASS_DST="$CONFIG_DIR/socks-vpn.pass"
+if [[ -f "$PASS_DST" ]]; then
+  log "Keeping existing password file at $PASS_DST"
+else
+  install -m 0600 /dev/null "$PASS_DST"
+  log "Created empty password file at $PASS_DST (fill it or switch to key auth)."
 fi
 
 log "Reloading systemd units"

@@ -2,7 +2,7 @@
 Type=Application
 Name=Socks VPN Tray
 Comment=System tray controller for the socks-vpn service
-Exec=/usr/lib/socks-vpn/socks-vpn-tray
+Exec=/usr/bin/socks-vpn-tray
 Icon=network-vpn
 Terminal=false
 Categories=Network;Utility;

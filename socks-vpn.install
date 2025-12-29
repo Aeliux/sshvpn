@@ -1,0 +1,15 @@
+post_install() {
+  if ! getent group socks-vpn >/dev/null; then
+    groupadd -r socks-vpn
+  fi
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  printf '\n==> Configure /etc/socks-vpn.conf and /etc/socks-vpn.pass before starting the service.\n'
+}
+
+post_upgrade() {
+  systemctl daemon-reload >/dev/null 2>&1 || true
+}
+
+post_remove() {
+  systemctl daemon-reload >/dev/null 2>&1 || true
+}
