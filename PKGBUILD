@@ -1,25 +1,19 @@
-# Maintainer: Your Name <you@example.com>
+# Maintainer: Alireza Poodineh <itsaeliux@gmail.com>
 
 pkgname=socks-vpn
 pkgver=0.1.0
 pkgrel=1
-pkgdesc="SSH-based SOCKS VPN with fail-closed routing"
+pkgdesc="SSH-based SOCKS VPN"
 arch=("x86_64" "aarch64")
-url="https://example.com/socks-vpn"
 license=("MIT")
 depends=("openssh" "sshpass" "badvpn" "curl" "python-pyqt5")
 makedepends=("git")
 install=${pkgname}.install
-source=("${pkgname}::git+file://${startdir}")
+source=(".work::git+https://github.com/aeliux/sshvpn.git")
 sha256sums=("SKIP")
 
-pkgver() {
-  cd "${srcdir}/${pkgname}"
-  git describe --tags --long 2>/dev/null | sed 's/^v//' || printf "%s" "${pkgver}"
-}
-
 package() {
-  cd "${srcdir}/${pkgname}"
+  cd "${srcdir}/.work"
 
   # Daemon and tray
   install -d "${pkgdir}/usr/lib/socks-vpn" "${pkgdir}/usr/bin"
