@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Idempotent installer for socks-vpn
-# - Installs scripts and units
-# - Preserves existing config/password files
-# - Restarts running service
-
 log() { echo "$*"; }
 die() { echo "ERROR: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"; }
@@ -15,33 +10,30 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 SRC_DIR=$(cd "$(dirname "$0")" && pwd)
+
 BIN_SRC="$SRC_DIR/bin"
-UNIT_SRC="$SRC_DIR/systemd"
+UNIT_SRC="$SRC_DIR/systemd/socks-vpn.service"
 DESKTOP_SRC="$SRC_DIR/desktop/socks-vpn-tray.desktop"
 POLKIT_SRC="$SRC_DIR/polkit/50-socks-vpn.rules"
-CONFIG_SRC="$SRC_DIR/config"
+CONFIG_SRC="$SRC_DIR/config/socks-vpn.conf"
+
 GROUP_NAME="socks-vpn"
 
-SYSTEMD_DIR=/etc/systemd/system
-POLKIT_DIR=/etc/polkit-1/rules.d
+LIB_DIR=/usr/lib/socks-vpn
+SYSTEMD_DIR=/usr/lib/systemd/system
 DESKTOP_DIR=/usr/share/applications
-CONFIG_DIR=/usr/local/etc
+POLKIT_DIR=/usr/share/polkit-1/rules.d
+CONFIG_DIR=/etc
 
-BIN_DST=/usr/local/bin/socks-vpn-control
-TRAY_DST=/usr/local/bin/socks-vpn-tray
-CONF_DST="$CONFIG_DIR/socks-vpn.conf"
-POLKIT_DST="$POLKIT_DIR/50-socks-vpn.rules"
+SYSTEMD_DST="$SYSTEMD_DIR/socks-vpn.service"
 DESKTOP_DST="$DESKTOP_DIR/socks-vpn-tray.desktop"
+POLKIT_DST="$POLKIT_DIR/50-socks-vpn.rules"
+CONF_DST="$CONFIG_DIR/socks-vpn.conf"
 
 is_active="$(systemctl is-active socks-vpn.service 2>/dev/null || true)"
-old_server_active="$(systemctl is-active socks-vpn-server.service 2>/dev/null || true)"
 if [[ "$is_active" == "active" ]]; then
   log "socks-vpn.service is currently active, stopping for installation..."
   systemctl stop socks-vpn.service
-fi
-if [[ "$old_server_active" == "active" ]]; then
-  log "Stopping legacy socks-vpn-server.service"
-  systemctl stop socks-vpn-server.service
 fi
 
 log "Checking required commands"
@@ -59,28 +51,21 @@ else
 fi
 
 log "Installing"
-install -d "$CONFIG_DIR" "$SYSTEMD_DIR" "$POLKIT_DIR" "$DESKTOP_DIR"
-install -m 0700 "$BIN_SRC/socks-vpn-control" "$BIN_DST"
-install -m 0755 "$BIN_SRC/socks-vpn-tray" "$TRAY_DST"
-install -m 0644 "$UNIT_SRC/socks-vpn.service" "$SYSTEMD_DIR/socks-vpn.service"
+install -d "$CONFIG_DIR" "$SYSTEMD_DIR" "$POLKIT_DIR" "$DESKTOP_DIR" "$LIB_DIR"
+
+for script in "$BIN_SRC"/*; do
+  script_name=$(basename "$script")
+  install -m 0755 "$script" "$LIB_DIR/$script_name"
+done
+
+install -m 0644 "$UNIT_SRC" "$SYSTEMD_DST"
 install -m 0644 "$POLKIT_SRC" "$POLKIT_DST"
 install -m 0644 "$DESKTOP_SRC" "$DESKTOP_DST"
-
-if [[ -f "$SYSTEMD_DIR/socks-vpn-server.service" ]]; then
-  log "Removing legacy socks-vpn-server.service (merged into socks-vpn.service)"
-  rm -f "$SYSTEMD_DIR/socks-vpn-server.service"
-fi
-
-if [[ -f "$CONFIG_DIR/ssh-socks.conf" ]]; then
-  echo "WARNING: Found legacy config file at $CONFIG_DIR/ssh-socks.conf"
-  echo "This file has been replaced by socks-vpn.conf."
-  echo "Please migrate any custom settings to $CONF_DST and remove the old file."
-fi
 
 if [[ -f "$CONF_DST" ]]; then
   log "Keeping existing config at $CONF_DST"
 else
-  install -m 0644 "$CONFIG_SRC/socks-vpn.conf" "$CONF_DST"
+  install -m 0644 "$CONFIG_SRC" "$CONF_DST"
   log "Installed new config to $CONF_DST"
 fi
 

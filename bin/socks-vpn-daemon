@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# /usr/local/bin/socks-vpn-control
+# /usr/lib/socks-vpn/socks-vpn-daemon
 
 set -euo pipefail
 

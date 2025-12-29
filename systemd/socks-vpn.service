@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 Environment=VPN_CONFIG=/usr/local/etc/socks-vpn.conf
-ExecStart=/usr/local/bin/socks-vpn-control
+ExecStart=/usr/lib/socks-vpn/socks-vpn-daemon
 Restart=on-failure
 RestartSec=3
 KillSignal=SIGTERM
